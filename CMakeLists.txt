@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(restapi C)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+
+if(WIN32)
+    add_compile_definitions(_WIN32_WINNT=0x0600)
+endif()
 
 option(RESTAPI_BUILD_EXAMPLES "Build RESTAPI example executables" ON)
 

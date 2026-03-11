@@ -9,10 +9,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
+#include "thread_pool_wrapper.h"
+#ifndef _WIN32
 #include <time.h>
 #endif
 #include "restapi.h"
@@ -38,7 +36,7 @@
 static unsigned long long now_ms(void)
 {
 #ifdef _WIN32
-    return (unsigned long long)GetTickCount64();
+    return (unsigned long long)GetTickCount();
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -108,7 +106,7 @@ int main(void)
     void*      pool    = NULL;
     void**     tasks   = NULL;
     char     (*tags)[16] = NULL;
-    pthread_t* threads = NULL;
+    thread_t* threads = NULL;
     TaskArg*   args    = NULL;
     int        rc      = 0;
     unsigned long long total_started = now_ms();
@@ -122,7 +120,7 @@ int main(void)
 
     tasks   = (void**)calloc(CFG_SEND_COUNT, sizeof(void*));
     tags    = (char (*)[16])calloc(CFG_SEND_COUNT, sizeof(*tags));
-    threads = (pthread_t*)calloc(CFG_SEND_COUNT, sizeof(pthread_t));
+    threads = (thread_t*)calloc(CFG_SEND_COUNT, sizeof(thread_t));
     args    = (TaskArg*)calloc(CFG_SEND_COUNT, sizeof(TaskArg));
     if (tasks == NULL || tags == NULL || threads == NULL || args == NULL)
     {
@@ -172,11 +170,11 @@ int main(void)
         args[i].index  = i;
         args[i].tag    = tags[i];
         args[i].result = NULL;
-        if (pthread_create(&threads[i], NULL, queue_task, &args[i]) != 0)
+        if (thread_create(&threads[i], queue_task, &args[i]) != 0)
         {
             fail("pthread_create failed");
             for (int j = 0; j < i; ++j)
-                pthread_join(threads[j], NULL);
+                thread_join(threads[j]);
             rc = 102;
             goto cleanup;
         }
@@ -184,7 +182,7 @@ int main(void)
 
     for (int i = 0; i < CFG_SEND_COUNT; ++i)
     {
-        pthread_join(threads[i], NULL);
+        thread_join(threads[i]);
         tasks[i] = args[i].result;
         if (tasks[i] == NULL)
         {

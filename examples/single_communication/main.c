@@ -28,7 +28,7 @@
 static unsigned long long now_ms(void)
 {
 #ifdef _WIN32
-    return (unsigned long long)GetTickCount64();
+    return (unsigned long long)GetTickCount();
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
