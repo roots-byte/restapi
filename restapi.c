@@ -144,6 +144,35 @@ static void Logger(const char* type, const char* func, int line, const char* mes
 	return;
 }
 
+static int hexval(char c)
+{
+    if (c <= '9') return c - '0';
+    if (c <= 'F') return c - 'A' + 10;
+    return c - 'a' + 10;
+}
+
+static int utf8_encode(char *out, uint32_t code)
+{
+    if (code < 0x80)
+    {
+        out[0] = code;
+        return 1;
+    }
+    else if (code < 0x800)
+    {
+        out[0] = 0xC0 | (code >> 6);
+        out[1] = 0x80 | (code & 0x3F);
+        return 2;
+    }
+    else
+    {
+        out[0] = 0xE0 | (code >> 12);
+        out[1] = 0x80 | ((code >> 6) & 0x3F);
+        out[2] = 0x80 | (code & 0x3F);
+        return 3;
+    }
+}
+
 int InitApi()
 {
 	#ifdef _WIN32
@@ -220,7 +249,18 @@ connection_t* CreateConnection(char* address, char* port)
 		return NULL;
 	}
 
-	CallocAray(connection, 10);
+	if (CallocAray(connection, 10) != 0)
+	{
+		LOG_ERROR("CreateConnection failed", "failed to allocate initial request buffer");
+		if (connection->sock != INVALID_SOCKET)
+		{
+			closesocket(connection->sock);
+			connection->sock = INVALID_SOCKET;
+		}
+		free(buffer);
+		free(connection);
+		return NULL;
+	}
 
 	return connection;
 }
@@ -517,6 +557,17 @@ static int ConnectWithTimeout(connection_t* connection)
 
 static int ParseHeader(char header[], int* json_len)
 {
+	if (header == NULL)
+	{
+		LOG_ERROR("ParseHeader invalid input", "header is NULL");
+		return INVALID_ARGUMENT;
+	}
+
+	if (json_len != NULL)
+	{
+		*json_len = -1;
+	}
+
     int inx = 0, inx_json_len = 0;
     short code = -1;
     char change = 0;
@@ -638,7 +689,7 @@ static int ParseHeader(char header[], int* json_len)
         LOG_ERROR("ParseHeader code not found", "");
         return CODE_NOT_FOUND;
     }
-    else if (*json_len == -1)
+	else if (json_len != NULL && *json_len == -1)
     {
         *json_len = 0;
 		return PARSE_OK;
@@ -681,20 +732,28 @@ static int ParseJson(connection_t* connection)
 
 static int ParseJsonNested(connection_t* connection, int* nested_number, int *inx, int* json_inx, const int end_inx)
 {
+	if (connection == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL ||
+		nested_number == NULL || inx == NULL || json_inx == NULL || end_inx < 0 ||
+		connection->buffer->size < end_inx)
+	{
+		LOG_ERROR("ParseJsonNested failed", "invalid arguments or buffer state");
+		return INVALID_ARGUMENT;
+	}
 
 
     int mode = 0, escape = 0, read_word = 0, value_type = 0;
     char list_in_string = 0;
     char list_started = 0;
+	char unicode[4] = {0};
     int list_depth = 0;
 
-	char* parse_json_ptr = connection->buffer->pointer+end_inx;
+	unsigned char* parse_json_ptr = (unsigned char*)connection->buffer->pointer+end_inx;
 	int* size = &connection->buffer->size;
-	char* origo_json_ptr = connection->buffer->pointer;
+	unsigned char* origo_json_ptr = (unsigned char*)connection->buffer->pointer;
 
     while(++(*inx) < end_inx)
     {
-        if ((*json_inx) + 5 >= *size - end_inx && ReallocArray(connection, ( (*json_inx) + end_inx + 5 ) * 2) != 0)
+        if ((*json_inx) + 10 >= *size - end_inx && ReallocArray(connection, ( (*json_inx) + end_inx + 10) * 2) != 0) //+10 for safe copy like unicode with max 3 symbol
         {
             return MEMORY_ERROR;
         }
@@ -779,8 +838,28 @@ static int ParseJsonNested(connection_t* connection, int* nested_number, int *in
                                 parse_json_ptr[(*json_inx)++] = '\t';
                                 break;
                             case 'u':
-                                parse_json_ptr[(*json_inx)++] = 'u';
-                                break;
+                                if (4 + (*inx) >= end_inx)
+									{
+										LOG_ERROR("ParseJson invalid json", "invalid unicode escape in list inx=%d json_inx=%d", *inx, *json_inx);
+										return INVALID_JSON;
+									}
+									
+									(*json_inx)++;
+
+									uint32_t code =
+										(hexval(origo_json_ptr[++(*inx)]) << 12) |
+										(hexval(origo_json_ptr[++(*inx)]) << 8)  |
+										(hexval(origo_json_ptr[++(*inx)]) << 4)  |
+										hexval(origo_json_ptr[++(*inx)]);
+
+									int len = utf8_encode(unicode, code);
+
+									for (int i = 0; i < len; i++)
+									{
+										parse_json_ptr[(*json_inx)++] = unicode[i];
+										printf("unicode char: %02x\n", (unsigned char)unicode[i]);
+									}
+									break;
                             default:
                                 LOG_ERROR("ParseJson invalid escape", "invalid escape=\\%c inx=%d json_inx=%d", origo_json_ptr[(*inx)], *inx, *json_inx);
                                 return PARSE_ERROR;
@@ -884,8 +963,29 @@ static int ParseJsonNested(connection_t* connection, int* nested_number, int *in
                             case 'r':  parse_json_ptr[(*json_inx)++] = '\r'; break;
                             case 't':  parse_json_ptr[(*json_inx)++] = '\t'; break;
                             case 'u':
-                                parse_json_ptr[(*json_inx)++] = 'u';
-                                break;
+                                if (4 + (*inx) >= end_inx)
+									{
+										LOG_ERROR("ParseJson invalid json", "invalid unicode escape in list inx=%d json_inx=%d", *inx, *json_inx);
+										return INVALID_JSON;
+									}
+									
+									(*json_inx)++;
+
+									uint32_t code =
+										(hexval(origo_json_ptr[++(*inx)]) << 12) |
+										(hexval(origo_json_ptr[++(*inx)]) << 8)  |
+										(hexval(origo_json_ptr[++(*inx)]) << 4)  |
+										hexval(origo_json_ptr[++(*inx)]);
+										
+
+									int len = utf8_encode(unicode, code);
+
+									for (int i = 0; i < len; i++)
+									{
+										parse_json_ptr[(*json_inx)++] = unicode[i];
+										printf("unicode char: %02x\n", (unsigned char)unicode[i]);
+									}
+									break;
                             default:
                                 LOG_ERROR("ParseJson invalid json", "invalid escape=\\%c inx=%d json_inx=%d", origo_json_ptr[(*inx)], *inx, *json_inx);
                                 return INVALID_JSON;
@@ -923,7 +1023,7 @@ static int ParseJsonNested(connection_t* connection, int* nested_number, int *in
                             if (origo_json_ptr[(*inx)] == '"') { list_in_string = 0; }
                             if (origo_json_ptr[(*inx)] < ' ')
                             {
-                                LOG_ERROR("ParseJson invalid json", "control char in list string inx=%d json_inx=%d", *inx, *json_inx);
+                                LOG_ERROR("ParseJson invalid json", "control char in list string inx=%d json_inx=%d, symbol=%d", *inx, *json_inx, (int)origo_json_ptr[(*inx)]);
                                 return INVALID_JSON;
                             }
                         }
@@ -940,10 +1040,31 @@ static int ParseJsonNested(connection_t* connection, int* nested_number, int *in
                                 case 'r':  parse_json_ptr[(*json_inx)++] = '\r'; break;
                                 case 't':  parse_json_ptr[(*json_inx)++] = '\t'; break;
                                 case 'u':
-                                    LOG_ERROR("ParseJson invalid json", "unsupported escape in list inx=%d json_inx=%d", *inx, *json_inx);
-                                    return INVALID_JSON;
+									if (4 + (*inx) >= end_inx)
+									{
+										LOG_ERROR("ParseJson invalid json", "invalid unicode escape in list inx=%d json_inx=%d", *inx, *json_inx);
+										return INVALID_JSON;
+									}
+									
+									(*json_inx)++;
+
+									uint32_t code =
+										(hexval(origo_json_ptr[++(*inx)]) << 12) |
+										(hexval(origo_json_ptr[++(*inx)]) << 8)  |
+										(hexval(origo_json_ptr[++(*inx)]) << 4)  |
+										hexval(origo_json_ptr[++(*inx)]);
+
+									int len = utf8_encode(unicode, code);
+
+									for (int i = 0; i < len; i++)
+									{
+										parse_json_ptr[(*json_inx)++] = unicode[i];
+										printf("unicode char: %02x\n", (unsigned char)unicode[i]);
+									}
+									break;
+									
                                 default:
-                                    LOG_ERROR("ParseJson invalid json", "invalid escape in list inx=%d json_inx=%d", *inx, *json_inx);
+                                    LOG_ERROR("ParseJson invalid json", "invalid escape in list inx=%d json_inx=%d, symbol=%d", *inx, *json_inx, (int)origo_json_ptr[(*inx)]);
                                     return INVALID_JSON;
                             }
                             escape = 0;
@@ -1075,11 +1196,22 @@ static int SearchInJson(dynamic_array* buffer, char *search[], int search_len, c
     int search_item = 0, nested_number_in_text = 0;
     int search_inx = 0;
 
-	if (buffer == NULL || buffer->pointer == NULL || search == NULL || result == NULL)
+	if (buffer == NULL || buffer->pointer == NULL || search == NULL || result == NULL || search_len <= 0)
 	{
 		LOG_ERROR("SearchInJson failed", "invalid input argument");
 		return INVALID_ARGUMENT;
 	}
+
+	for (int i = 0; i < search_len; i++)
+	{
+		if (search[i] == NULL)
+		{
+			LOG_ERROR("SearchInJson failed", "search[%d] is NULL", i);
+			return INVALID_ARGUMENT;
+		}
+	}
+
+	*result = NULL;
 
 	char* parse_json_ptr = buffer->pointer;
 
@@ -1151,7 +1283,7 @@ static int SearchInJson(dynamic_array* buffer, char *search[], int search_len, c
 
 static int ReallocArray(connection_t* connection, int new_size)
 {
-	if (connection == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL)
+	if (connection == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL || new_size <= 0)
 	{
 		LOG_ERROR("ReallocArray failed", "invalid connection or buffer");
 		return INVALID_ARGUMENT;
@@ -1160,6 +1292,8 @@ static int ReallocArray(connection_t* connection, int new_size)
 	connection->buffer->temp_pointer = (char*) realloc(connection->buffer->pointer, new_size * sizeof(char));
 	if(connection->buffer->temp_pointer == NULL)
 	{
+		free(connection->buffer->pointer);
+		connection->buffer->pointer = NULL;
 		LOG_ERROR("failed to realloc memory for request", "realoc size: %d",new_size);
 		return MEMORY_ERROR;
 	}
@@ -1176,7 +1310,7 @@ static int ReallocArray(connection_t* connection, int new_size)
 
 static int CallocAray(connection_t* connection, int size)
 {
-	if (connection == NULL || connection->buffer == NULL)
+	if (connection == NULL || connection->buffer == NULL || size <= 0)
 	{
 		LOG_ERROR("CallocAray failed", "invalid connection or buffer");
 		return INVALID_ARGUMENT;
@@ -1207,6 +1341,12 @@ static int RecvJson(connection_t* connection)
 	int count_socket_handles = 0;
 	int json_len = -1;
 
+	if (connection == NULL || connection->sock == INVALID_SOCKET || connection->buffer == NULL)
+	{
+		LOG_ERROR("RecvJson failed", "invalid connection argument or socket");
+		return INVALID_ARGUMENT;
+	}
+
 	#ifdef _WIN32
 	int nfds = 0;
 	#else
@@ -1215,12 +1355,6 @@ static int RecvJson(connection_t* connection)
 
 	// wait on socket is ready to read
 	fd_set fds;
-
-	if (connection == NULL || connection->sock == INVALID_SOCKET || connection->buffer == NULL)
-	{
-		LOG_ERROR("RecvJson failed", "invalid connection argument or socket");
-		return INVALID_ARGUMENT;
-	}
 
 	//setup request memory
 	if (connection->buffer->pointer == NULL && CallocAray(connection,16) != 0)
@@ -1421,7 +1555,7 @@ static int RecvJson(connection_t* connection)
 
 static int AddHeader(connection_t *connection, const char* path)
 {
-	if (connection == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL)
+	if (connection == NULL || connection->address == NULL || path == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL)
 	{
 		LOG_ERROR("input argument in add header", "");
 		return INVALID_ARGUMENT;
@@ -1563,13 +1697,13 @@ int JsonCommunication(connection_t*connection, const char* path, const char* jso
 		return INIT_ERROR;
 	}
 	
-	if (path == NULL)
+	if (path == NULL || json_text == NULL)
 	{
 		LOG_ERROR("json or path argument missing", "");
 		return CONN_SETUP_ERROR;
 	}
 
-	if (connection == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL)
+	if (connection == NULL || connection->buffer == NULL || connection->buffer->pointer == NULL || connection->buffer->size <= 0)
 	{
 		LOG_ERROR("JsonCommunication failed", "invalid connection argument or buffer");
 		return INVALID_ARGUMENT;
@@ -1592,7 +1726,7 @@ int JsonCommunication(connection_t*connection, const char* path, const char* jso
 			return CREATE_BUFFER_ERROR;
 		}
 
-		else if (connection->buffer->len > connection->buffer->size)
+		else if (connection->buffer->len >= connection->buffer->size)
 		{
 			if (ReallocArray(connection, (connection->buffer->len)*2 )!= 0)
 			{
@@ -1604,7 +1738,7 @@ int JsonCommunication(connection_t*connection, const char* path, const char* jso
 			connection->buffer->len = vsnprintf(connection->buffer->pointer, connection->buffer->size, json_text, args);
 			va_end(args);
 
-			if (connection->buffer->len < 0 || connection->buffer->len > connection->buffer->size)
+			if (connection->buffer->len < 0 || connection->buffer->len >= connection->buffer->size)
 			{
 				LOG_ERROR("error while create request", "");
 				return CREATE_BUFFER_ERROR;
@@ -1710,7 +1844,24 @@ void DestroyConnectionPool(void* pool_v)
 	}
 }
 
-void* SendJsonToPool(void* pool_v, const char* path, const char* json, ...)
+void* SendJsonToPool(void* pool_v, const char* path,const char* json, ...)
+{
+	if (pool_v == NULL || path == NULL || json == NULL)
+	{
+		LOG_ERROR("SendJsonToPool failed", "invalid input arguments");
+		return NULL;
+	}
+
+	void* task = 0;
+	va_list args;
+	va_start(args, json);
+	task = SendArgumentToPool(pool_v, path, json, args);
+	va_end(args);
+	return task;
+
+}
+
+void* SendArgumentToPool(void* pool_v, const char* path, const char* json, va_list args_in)
 {
 	pool_t*        pool      = (pool_t*)pool_v;
 	task_t*        task      = NULL;
@@ -1733,7 +1884,7 @@ void* SendJsonToPool(void* pool_v, const char* path, const char* json, ...)
 	}
 
 	/* calculate serialised json length */
-	va_start(argv, json);
+	va_copy(argv, args_in);
 	json_size = vsnprintf(NULL, 0, json, argv);
 	va_end(argv);
 	if (json_size < 0)
@@ -1756,7 +1907,7 @@ void* SendJsonToPool(void* pool_v, const char* path, const char* json, ...)
 		goto free_all;
 	}
 
-	va_start(argv, json);
+	va_copy(argv, args_in);
 	print_size = vsnprintf(json_task->pointer, json_size + 1, json, argv);
 	va_end(argv);
 	if (print_size < 0 || print_size > json_size)
@@ -1809,14 +1960,13 @@ void DeletePoolTask(void* task_v)
 {
 	task_t* task = (task_t*)task_v;
 	if (task == NULL) return;
+	DestroyTask(task);
 	if (task->buffer) 
 	{
 		if (task->buffer->pointer) free(task->buffer->pointer);
 		free(task->buffer);
 	}
 	if (task->path) free(task->path);
-
-	DestroyTask(task);
 	return;
 }
 
@@ -1829,7 +1979,20 @@ int WaitForConnectionDone(void* task_v)
 		return INVALID_ARGUMENT;
 	}
 	
-	return WaitForFinishTask(task);
+	if (WaitForFinishTask(task) != 0)
+	{
+		LOG_ERROR("WaitForConnectionDone failed", "error while waiting for task to finish");
+		return -1;
+	}
+
+	int status = atomic_int_get(&task->job_status);
+	if (status != TASK_STATUS_FINISHED)
+	{
+		LOG_ERROR("WaitForConnectionDone failed", "task finished with error status: %d", status);
+		return status;
+	}
+
+	return 0;
 }
 
 int GetConnectionResult(void* task_v)
@@ -1847,7 +2010,7 @@ int GetConnectionResult(void* task_v)
 char* GetConnectionParseJson(void* task_v)
 {
 	task_t* task = (task_t*)task_v;
-	if (task == NULL)
+	if (task == NULL || task->buffer == NULL || task->buffer->pointer == NULL)
 	{
 		LOG_ERROR("GetConnectionParseJson failed", "invalid task argument");
 		return NULL;
@@ -1902,7 +2065,7 @@ static void PoolConnectionDestroyFunc(pool_worker_t* worker)
 
 static int PoolConnectionWorkerFunc(pool_worker_t* worker)
 {
-	if (worker == NULL || worker->task == NULL || worker->connection == NULL)
+	if (worker == NULL || worker->task == NULL || worker->connection == NULL || worker->task->buffer == NULL || worker->task->path == NULL || worker->task->buffer->pointer == NULL)
 	{
 		LOG_ERROR("PoolConnectionWorker failed", "invalid init data");
 		return -1;
@@ -1935,8 +2098,8 @@ static int PoolConnectionWorkerFunc(pool_worker_t* worker)
 	buffer->pointer[connection->buffer->len] = '\0';
 	worker->task->buffer->len = connection->buffer->len;
 
-	atomic_int_set(&worker->task->job_status, TASK_STATUS_FINISHED);
 	return 0;
 }
 
+//static int 
 //

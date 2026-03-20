@@ -28,7 +28,7 @@
 #define CFG_HOST "httpbin.org"
 #define CFG_PORT "80"
 #define CFG_PATH "/anything"
-#define CFG_THREADS 16
+#define CFG_THREADS 100
 #define CFG_SEND_COUNT 1000
 #define CFG_SECRET "smoula"
 #define CFG_TAG_PREFIX "JOB"

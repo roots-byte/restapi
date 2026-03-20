@@ -15,6 +15,7 @@ extern "C" {
 #endif
 
 #include "restapi_compat.h"
+#include <stdarg.h>
 
 #ifndef DEBUG_RESTAPI
 #define DEBUG_RESTAPI 0
@@ -154,6 +155,23 @@ RESTAPI_EXPORT void DestroyConnectionPool(void* pool_v);
  * @return Opaque task handle, or `NULL` on failure.
  */
 RESTAPI_EXPORT void* SendJsonToPool(void* pool_v, const char* path, const char* json, ...);
+
+/**
+ * @brief Submit one JSON request into the pool queue using a pre-built va_list.
+ *
+ * This is the va_list counterpart of SendJsonToPool() — useful when the caller
+ * already holds a `va_list` (e.g. inside a variadic wrapper function).  The
+ * format string @p json is expanded with @p args_in before the request is
+ * queued; the caller is responsible for calling `va_end` on @p args_in after
+ * this function returns.
+ *
+ * @param[in] pool_v   Opaque pool handle returned by CreateConnectionPool().
+ * @param[in] path     API endpoint path (e.g. `"/anything"`).
+ * @param[in] json     JSON body or printf-style format string.
+ * @param[in] args_in  Initialised `va_list` for @p json format arguments.
+ * @return Opaque task handle, or `NULL` on failure.
+ */
+RESTAPI_EXPORT void* SendArgumentToPool(void* pool_v, const char* path, const char* json, va_list args_in);
 
 /**
  * @brief Wait until the submitted task finishes.

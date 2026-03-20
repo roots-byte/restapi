@@ -1,6 +1,6 @@
 # restapi
 
-Lightweight C11 library for socket-based JSON REST communication.  
+Lightweight C99 library for socket-based JSON REST communication.  
 Supports both single-connection and thread-pool (parallel) request modes.  
 Cross-platform: Linux/POSIX and Windows (Winsock2).
 
@@ -12,13 +12,13 @@ Cross-platform: Linux/POSIX and Windows (Winsock2).
 - **Connection pool** — submit many requests in parallel using a built-in thread pool
 - **JSON path search** — extract values from nested JSON by key path
 - **Automatic reconnect** — up to 3 attempts on disconnect
-- **Zero external dependencies** — pure C11, POSIX sockets / Winsock2
+- **Zero external dependencies** — pure C99, POSIX sockets / Winsock2
 
 ---
 
 ## Build
 
-Requires **CMake ≥ 3.16** and a C11 compiler.
+Requires **CMake ≥ 3.16** and a C99 compiler.
 
 ```sh
 cmake -S . -B build
@@ -118,6 +118,7 @@ int main(void)
 | `CreateConnectionPool(host, port, threads)` | Create a pool with `threads` persistent connections. |
 | `DestroyConnectionPool(pool)` | Shut down pool and close all connections. |
 | `SendJsonToPool(pool, path, json, ...)` | Queue a JSON request; returns an opaque task handle. |
+| `SendArgumentToPool(pool, path, json, args)` | Same as `SendJsonToPool` but accepts a pre-built `va_list` — use inside variadic wrapper functions. |
 | `WaitForConnectionDone(task)` | Block until the task finishes. |
 | `WaitForFinishConnectionPool(pool)` | Block until all tasks in the pool are done. |
 | `GetConnectionResult(task)` | Get the task completion status (`TASK_STATUS_FINISHED = 3`). |
